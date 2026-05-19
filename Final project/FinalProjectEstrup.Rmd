@@ -1,0 +1,387 @@
+---
+title: "Estrup_aviser"
+output: html_document
+date: "2026-05-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(tidytext)
+library(ggwordcloud)
+
+#load sentida 
+if(!require("devtools")) install.packages("devtools")
+devtools::install_github("Guscode/Sentida")
+library(Sentida)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+
+#load our data
+Estrup_efter_attentat <- read_csv("data/Estrup_efter_attentat.csv")
+Estrup_før_attentat <- read_csv("data/Estrup_før_attentat.csv")
+
+```
+
+
+
+```{r}
+
+#how many papers wrote about estrup in the period?
+unique(Estrup_før_attentat$familyId)
+
+length(unique(Estrup_før_attentat$familyId))
+length(unique(Estrup_efter_attentat$familyId))
+
+#8 papers in total 
+```
+
+
+```{r}
+#load stopword list
+dk_stopwords <- read.csv("stopord - max/stopord_18.csv", header = FALSE)
+
+colnames(dk_stopwords) <- "word"
+
+```
+
+
+```{r}
+word_freq_før <- Estrup_før_attentat %>%
+  select(fulltext_org) %>%
+  unnest_tokens(word, fulltext_org) %>%  
+  anti_join(dk_stopwords, by = "word") %>% 
+  filter(str_detect(word, "[a-zæøå]")) %>% 
+  count(word, sort = TRUE)
+
+head(word_freq_før, 20)
+
+
+word_freq_efter <- Estrup_efter_attentat %>%
+  select(fulltext_org) %>%
+  unnest_tokens(word, fulltext_org) %>%   
+  anti_join(dk_stopwords, by = "word") %>% 
+  filter(str_detect(word, "[a-zæøå]")) %>% 
+  count(word, sort = TRUE)
+
+head(word_freq_efter, 20)
+
+```
+
+
+```{r}
+
+# Word Clouds 
+ggplot(word_freq_før %>% head(30), aes(label = word, size = n)) +
+  geom_text_wordcloud() +
+  scale_size_area(max_size = 15) +
+  labs(title = "Most used words before assasination attempt") +
+  theme_minimal()
+
+ggplot(word_freq_efter %>% head(30), aes(label = word, size = n)) +
+  geom_text_wordcloud() +
+  scale_size_area(max_size = 15) +
+  labs(title = "Most used words after assasination attempt") +
+  theme_minimal()
+
+# decided not to use this in final project, but will leave it here to show process
+```
+```{r}
+
+# Time for sentiment analysis with Sentida 
+sentiment_før <- Estrup_før_attentat %>%
+  mutate(sentiment = map_dbl(fulltext_org, ~sentida(.x, output = "mean")),
+         period = "før")
+
+sentiment_efter <- Estrup_efter_attentat %>%
+  mutate(sentiment = map_dbl(fulltext_org, ~sentida(.x, output = "mean")),
+         period = "efter")
+
+
+bind_rows(sentiment_før, sentiment_efter) %>%
+  ggplot(aes(x = period, y = sentiment, fill = period)) +
+  geom_boxplot() +
+  labs(title = "Sentiment i avisdækning af Estrup",
+       x = "Periode", y = "Gennemsnitlig sentiment") +
+  theme_minimal()
+
+
+# -------------------
+#Sentiment per newspaper per period
+sentiment_før <- Estrup_før_attentat %>%
+  mutate(
+    sentiment = map_dbl(fulltext_org, ~sentida(.x, output = "mean")),
+    period = "før"
+  )
+
+sentiment_efter <- Estrup_efter_attentat %>%
+  mutate(
+    sentiment = map_dbl(fulltext_org, ~sentida(.x, output = "mean")),
+    period = "efter"
+  )
+
+sentiment_combined <- bind_rows(sentiment_før, sentiment_efter)
+
+
+#Average sentiment per newspaper per period 
+sentiment_by_paper <- sentiment_combined %>%
+  group_by(familyId, period) %>%
+  summarise(mean_sentiment = mean(sentiment, na.rm = TRUE),
+            n_articles = n(),
+            .groups = "drop")
+
+```
+
+
+```{r}
+# Average sentiment per newspaper per period
+sentiment_by_paper <- sentiment_combined %>%
+  group_by(familyId, period) %>%
+  summarise(mean_sentiment = mean(sentiment, na.rm = TRUE),
+            n_articles = n(),
+            .groups = "drop")
+
+# Time to calculate the CHANGE in sentiment
+sentiment_change <- sentiment_by_paper %>%
+  pivot_wider(names_from = period, 
+              values_from = c(mean_sentiment, n_articles)) %>%
+  mutate(sentiment_change = mean_sentiment_efter - `mean_sentiment_før`) %>%
+  arrange(desc(abs(sentiment_change)))
+
+print(sentiment_change)
+```
+
+
+```{r}
+
+
+# Time to visualise which papers changed most? 
+sentiment_change %>%
+  ggplot(aes(x = reorder(familyId, sentiment_change), 
+             y = sentiment_change,
+             fill = sentiment_change > 0)) +
+  geom_col() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "darkgreen", "FALSE" = "red"),
+                    labels = c("TRUE" = "More positive", "FALSE" = "More negative")) +
+  labs(
+    title = "change in each papers sentiment after the assasination attempt",
+    subtitle = "Positive = more positive tone afterwards",
+    x = NULL,
+    y = "change in average sentiment",
+    fill = "Direction"
+  ) +
+  theme_minimal()
+
+
+# Sentiment before vs after per paper
+sentiment_by_paper %>%
+  mutate(period = factor(period, levels = c("før", "efter"))) %>% 
+  ggplot(aes(x = period, y = mean_sentiment, 
+             group = familyId, color = familyId)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
+  labs(
+    title = "Sentiment pr. paper: before vs. after assasination attempt",
+    x = "Period",
+    y = "Average sentiment",
+    color = "Paper"
+  ) +
+  theme_minimal()
+```
+
+
+```{r}
+
+# they are almost all the same sentiment - lets see if it changes by  analysing only sentences mentioning Estrup
+
+
+#  Extract only sentences mentioning Estrup 
+extract_estrup_sentences <- function(text) {
+  sentences <- unlist(str_split(text, "(?<=[.!?])\\s+"))
+  estrup_sentences <- sentences[str_detect(sentences, 
+                                        regex("estrup", ignore_case = TRUE))]
+  paste(estrup_sentences, collapse = " ")
+}
+
+# Apply to both datasets
+sentiment_før <- Estrup_før_attentat %>%
+  mutate(
+    estrup_text = map_chr(fulltext_org, extract_estrup_sentences),
+    sentiment   = map_dbl(estrup_text, ~{
+      if (nchar(.x) < 5) NA_real_     
+      else sentida(.x, output = "mean")
+    }),
+    period = "før"
+  )
+
+sentiment_efter <- Estrup_efter_attentat %>%
+  mutate(
+    estrup_text = map_chr(fulltext_org, extract_estrup_sentences),
+    sentiment   = map_dbl(estrup_text, ~{
+      if (nchar(.x) < 5) NA_real_
+      else sentida(.x, output = "mean")
+    }),
+    period = "efter"
+  )
+
+
+# now its time to try again
+# Combine the two periods (now using Estrup-filtered sentiment)
+sentiment_combined <- bind_rows(sentiment_før, sentiment_efter)
+
+# Average sentiment per newspaper per period 
+sentiment_by_paper <- sentiment_combined %>%
+  filter(!is.na(sentiment)) %>%   
+  group_by(familyId, period) %>%
+  summarise(
+    mean_sentiment = mean(sentiment, na.rm = TRUE),
+    n_articles     = n(),
+    .groups        = "drop"
+  )
+
+# Calculate the change
+sentiment_change <- sentiment_by_paper %>%
+  pivot_wider(names_from  = period,
+              values_from = c(mean_sentiment, n_articles)) %>%
+  mutate(sentiment_change = mean_sentiment_efter - `mean_sentiment_før`) %>%
+  arrange(desc(abs(sentiment_change)))
+
+print(sentiment_change)
+
+# Chart 1
+sentiment_change %>%
+  ggplot(aes(x = reorder(familyId, sentiment_change),
+             y = sentiment_change,
+             fill = sentiment_change > 0)) +
+  geom_col() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "darkgreen", "FALSE" = "red"),
+                    labels = c("TRUE" = "More positive", "FALSE" = "More negative")) +
+  labs(
+    title = "Change in sentiment after assasination attempt pr. paper",
+    subtitle = "Only sentences mentioning Estrup",
+    x = NULL,
+    y = "Ændring i sentiment (efter − før)",
+    fill = "Retning"
+  ) +
+  theme_minimal()
+
+# Chart 2
+sentiment_by_paper %>%
+  mutate(period = factor(period, levels = c("før", "efter"))) %>% 
+  ggplot(aes(x = period, y = mean_sentiment, 
+             group = familyId, color = familyId)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey60") +
+  labs(
+    title = "Sentiment pr. paper: before vs. after assasination attempt",
+    subtitle = "Only sentences mentioning Estrup",
+    x = "Period",
+    y = "Average sentiment",
+    color = "Paper"
+  ) +
+  theme_minimal()
+```
+
+
+
+
+```{r}
+
+# Combine both periods with dates
+sentiment_combined <- bind_rows(sentiment_før, sentiment_efter) %>%
+  filter(!is.na(sentiment))
+
+# Make sure timestamp is in date format
+sentiment_combined <- sentiment_combined %>%
+  mutate(timestamp = as.Date(timestamp))
+
+# Plot
+ggplot(sentiment_combined, aes(x = timestamp, y = sentiment, color = familyId)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_vline(xintercept = as.Date("1885-10-21"),
+             linetype = "dashed", color = "black", linewidth = 0.8) +
+  annotate("text", x = as.Date("1885-10-21"), y = max(sentiment_combined$sentiment, na.rm = TRUE),
+           label = "assassination attempt", hjust = -0.1, size = 3.5, color = "black") +
+  labs(
+    title = "Sentiment in newspapers coverage of Estrup over time",
+    subtitle = "Only sentences mentioning Estrup",
+    x = "Date",
+    y = "Sentiment",
+    color = "Paper"
+  ) +
+  theme_minimal()
+
+
+
+
+# Plot with only two (very different) newspapers
+sentiment_combined %>%
+  filter(familyId %in% c("aktuelt", "berlingsketidende")) %>%
+  ggplot(aes(x = timestamp, y = sentiment, color = familyId)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "loess", se = FALSE) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_vline(xintercept = as.Date("1885-10-21"),
+             linetype = "dashed", color = "black", linewidth = 0.8) +
+  annotate("text", x = as.Date("1885-10-21"), y = max(sentiment_combined$sentiment, na.rm = TRUE),
+           label = "assassination attempt", hjust = -0.1, size = 3.5, color = "black") +
+  labs(
+    title = "Sentiment in newspapers coverage of Estrup over time",
+    subtitle = "Only sentences mentioning Estrup",
+    x = "Date",
+    y = "Sentiment",
+    color = "Paper"
+  ) +
+  theme_minimal()
+
+```
+```{r}
+# the graph above shows that there is not a big difference over time and much of it is neutral
+# lets explore why by using some examples
+
+
+# examples on words 
+sentida("socialisme", output = "mean")
+
+sentida("konge", output = "mean")
+
+sentida("demokrati", output = "mean")
+
+
+# example on sentence
+sentida("Ogsaa Estrup har jo Friheden paa sit Program", output = "total")
+
+
+# Sentida can't read OCR proberly
+sentida("pr. estrup var dum", output = "mean")
+
+sentida("dernæst talte redaktør laursen om at minister estrup var dum", output = "mean")
+
+
+# example on neutral sentence
+sentida("Til Fanetoget\nfor Conseilsprasident Estrup ndleie flag", output = "mean")
+
+sentida("Til Fanetoget for Estrup udlejes flag", output = "mean")
+```
+
+
+```{r}
+
+
+```
+
