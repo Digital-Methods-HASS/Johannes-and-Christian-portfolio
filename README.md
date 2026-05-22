@@ -1,4 +1,4 @@
 # Johannes-and-Christian-portfolio
 
 
-Final portfolio (Johannes version)
+Final portfolio 
